@@ -1,0 +1,9 @@
+PySide6>=6.6
+mss>=9.0
+Pillow>=10.0
+requests>=2.31
+winrt-Windows.Media.Ocr>=2.0.0
+winrt-Windows.Graphics.Imaging>=2.0.0
+winrt-Windows.Storage.Streams>=2.0.0
+winrt-Windows.Foundation>=2.0.0
+pywin32>=306
