@@ -26,7 +26,7 @@ from capture import grab_virtual_desktop_qt
 from hotkey import HotkeyListener
 from overlay import SelectionOverlay
 from toolbar import ActionToolbar
-from tray import TrayApp
+from tray import TrayApp, get_app_icon
 from settings_dialog import SettingsDialog
 
 SINGLE_INSTANCE_SOCKET = "CircleToSearch_Windows_App_IPC"
@@ -43,14 +43,12 @@ class App:
         self.qapp = qapp
         self.settings = cfg.load_settings()
 
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
-        if os.path.exists(icon_path):
-            self.qapp.setWindowIcon(QIcon(icon_path))
+        self.qapp.setWindowIcon(get_app_icon())
 
         self.bridge = Bridge()
         self.bridge.trigger.connect(self._on_activate)
 
-        self._busy = False  # ignore rapid re-trigger while an overlay is open
+        self._busy = False
         self._overlay = None
         self._toolbar = None
 
@@ -61,8 +59,10 @@ class App:
         self.local_server.newConnection.connect(self._on_ipc_connection)
 
         self.hotkey = HotkeyListener(
-            self.settings["hotkey_mods"], self.settings["hotkey_vk"],
+            self.settings["hotkey_mods"],
+            self.settings["hotkey_vk"],
             callback=lambda: self.bridge.trigger.emit(),
+            on_error=self._on_hotkey_error,
         )
         self.hotkey.start()
 
@@ -74,23 +74,46 @@ class App:
 
         if trigger_on_start:
             # Trigger capture overlay after Qt event loop initializes
-            QTimer.singleShot(100, lambda: self.bridge.trigger.emit())
+            QTimer.singleShot(150, lambda: self.bridge.trigger.emit())
+
+    def _on_hotkey_error(self, err_code: int):
+        label = self.settings.get("hotkey_label", "shortcut")
+        self.tray.notify(
+            "Shortcut Conflict",
+            f"Could not register '{label}'. Another application is using this shortcut. Please update it in Settings.",
+            is_warning=True,
+        )
 
     def _on_ipc_connection(self):
         socket = self.local_server.nextPendingConnection()
         if socket:
+            socket.disconnected.connect(socket.deleteLater)
             socket.readyRead.connect(lambda: self._handle_ipc_message(socket))
+            if socket.bytesAvailable():
+                self._handle_ipc_message(socket)
 
     def _handle_ipc_message(self, socket):
-        data = socket.readAll().data().decode("utf-8", errors="ignore")
-        if "trigger" in data:
-            self.bridge.trigger.emit()
-        socket.disconnectFromServer()
+        try:
+            data = socket.readAll().data().decode("utf-8", errors="ignore")
+            if "trigger" in data:
+                self.bridge.trigger.emit()
+            socket.disconnectFromServer()
+        except Exception:
+            pass
 
     # ---- activation flow -------------------------------------------------
     def _on_activate(self):
-        if self._busy:
+        # If an overlay is currently open, ignore duplicate triggers
+        if self._overlay is not None:
+            self._overlay.raise_()
+            self._overlay.activateWindow()
             return
+
+        # If a toolbar is currently showing, close it cleanly first
+        if self._toolbar is not None:
+            self._toolbar.close()
+            self._toolbar = None
+
         self._busy = True
         try:
             bg_pixmap, vgeo = grab_virtual_desktop_qt()
@@ -101,7 +124,7 @@ class App:
         self._overlay = SelectionOverlay(bg_pixmap, vgeo)
         self._overlay.selection_made.connect(self._on_selection)
         self._overlay.cancelled.connect(self._on_overlay_closed)
-        self._overlay.destroyed.connect(lambda: self._on_overlay_closed())
+        self._overlay.destroyed.connect(self._on_overlay_closed)
         self._overlay.showFullScreenAllMonitors()
 
     def _on_selection(self, crop_pixmap, abs_rect):
@@ -113,10 +136,16 @@ class App:
             crop_pixmap, abs_rect,
             min_chars_for_text=self.settings.get("ocr_min_chars_for_text_suggestion", 2),
         )
-        self._toolbar.closed.connect(self._on_overlay_closed)
+        self._toolbar.closed.connect(self._on_toolbar_closed)
         self._toolbar.show()
 
     def _on_overlay_closed(self):
+        self._overlay = None
+        if self._toolbar is None:
+            self._busy = False
+
+    def _on_toolbar_closed(self):
+        self._toolbar = None
         self._busy = False
 
     def _open_settings(self):
@@ -139,28 +168,32 @@ class App:
 
 
 def try_trigger_existing_instance() -> bool:
-    """If another instance of Circle to Search is already running in background,
-    notify it to trigger screen capture and return True."""
+    """If an instance is already running in background, tell it to trigger snip."""
     socket = QLocalSocket()
     socket.connectToServer(SINGLE_INSTANCE_SOCKET)
-    if socket.waitForConnected(200):
+    if socket.waitForConnected(250):
         socket.write(b"trigger\n")
-        socket.waitForBytesWritten(200)
+        socket.waitForBytesWritten(250)
         socket.disconnectFromServer()
         return True
     return False
 
 
 if __name__ == "__main__":
-    trigger_flag = ("--trigger" in sys.argv) or len(sys.argv) == 1
+    # Ensure QApplication is initialized before any Qt sockets or IPC
+    qapp = QApplication(sys.argv)
+    qapp.setQuitOnLastWindowClosed(False)
 
-    # Check if already running in background tray
+    is_tray_mode = "--tray" in sys.argv or "--background" in sys.argv
+    is_trigger_mode = "--trigger" in sys.argv
+
+    # If already running in background, signal it to trigger and exit immediately
     if try_trigger_existing_instance():
         sys.exit(0)
 
     # First instance startup
-    qapp = QApplication(sys.argv)
-    qapp.setQuitOnLastWindowClosed(False)
+    # If launched with --tray, start silent in tray without popping overlay
+    trigger_on_start = False if is_tray_mode else (is_trigger_mode or len(sys.argv) == 1)
 
-    app = App(qapp, trigger_on_start=trigger_flag)
+    app = App(qapp, trigger_on_start=trigger_on_start)
     sys.exit(app.run())

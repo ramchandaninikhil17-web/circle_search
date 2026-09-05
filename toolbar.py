@@ -2,7 +2,8 @@
 Appears instantly with Google Lens search, local OCR text extraction,
 instant clipboard copying, and quick save.
 """
-from PySide6.QtCore import Qt, QRect, QThread, Signal
+from datetime import datetime
+from PySide6.QtCore import Qt, QRect, QThread, Signal, QTimer
 from PySide6.QtGui import QGuiApplication, QColor, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
@@ -49,6 +50,8 @@ class ActionToolbar(QWidget):
         self._min_chars = min_chars_for_text
         self._detected_text = None
         self._search_thread = None
+        self._ocr_thread = None
+        self._abs_rect = abs_rect
 
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -239,14 +242,37 @@ class ActionToolbar(QWidget):
         screen = QGuiApplication.screenAt(abs_rect.center()) or QGuiApplication.primaryScreen()
         avail = screen.availableGeometry()
         self.adjustSize()
-        w, h = 420, 95
+        w = max(420, self.width())
+        h = max(95, self.height())
         x = min(abs_rect.right() + 12, avail.right() - w)
         y = abs_rect.top()
         if y + h > avail.bottom():
-            y = avail.bottom() - h
+            y = max(avail.top(), avail.bottom() - h)
         if x < avail.left():
             x = avail.left()
         self.move(x, y)
+
+    def _reclamp_to_screen(self):
+        """Ensures toolbar never expands off-screen when toggling text."""
+        self.adjustSize()
+        geom = self.geometry()
+        screen = QGuiApplication.screenAt(geom.center()) or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+
+        new_x = geom.x()
+        new_y = geom.y()
+
+        if new_x + geom.width() > avail.right():
+            new_x = avail.right() - geom.width()
+        if new_x < avail.left():
+            new_x = avail.left()
+
+        if new_y + geom.height() > avail.bottom():
+            new_y = avail.bottom() - geom.height()
+        if new_y < avail.top():
+            new_y = avail.top()
+
+        self.move(new_x, new_y)
 
     # ---- OCR callback -------------------------------------------------
     def _on_ocr_done(self, text: str):
@@ -258,21 +284,21 @@ class ActionToolbar(QWidget):
             words = len(self._detected_text.split())
             self.btn_text.setText(f"✨ Text ({words}w)")
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
-            self.status.setText(f"✓ Text detected: \"{self._detected_text[:35]}...\"" if len(self._detected_text) > 35 else f"✓ Text detected: \"{self._detected_text}\"")
+            preview_snippet = self._detected_text.replace("\n", " ")[:40]
+            self.status.setText(f"✓ Text: \"{preview_snippet}...\"" if len(self._detected_text) > 40 else f"✓ Text: \"{preview_snippet}\"")
         else:
             self.status.setStyleSheet("color: #5F6368; font-weight: 500;")
             self.status.setText("Visual selection ready")
 
     # ---- actions -------------------------------------------------
     def _on_image_search(self):
-        # 1. Immediately place image on clipboard
         clipboard = QApplication.clipboard()
         clipboard.setPixmap(self._crop_pixmap)
 
         self.btn_image.setEnabled(False)
         self.btn_image.setText("Searching…")
         self.status.setStyleSheet("color: #1A73E8; font-weight: 600;")
-        self.status.setText("Uploading to Google Lens…")
+        self.status.setText("Opening Google Lens…")
 
         self._search_thread = SearchWorker(self._crop_pil)
         self._search_thread.done.connect(self._on_search_done)
@@ -280,6 +306,7 @@ class ActionToolbar(QWidget):
 
     def _on_search_done(self, ok: bool, message: str):
         if ok:
+            # Auto-close on successful search trigger
             self.close()
         else:
             self.btn_image.setEnabled(True)
@@ -301,7 +328,7 @@ class ActionToolbar(QWidget):
         self.text_preview.setVisible(not is_visible)
         self.btn_copy_text.setVisible(not is_visible)
         self.btn_search_text.setVisible(not is_visible)
-        self.adjustSize()
+        self._reclamp_to_screen()
 
     def _on_search_text(self):
         text = self.text_preview.toPlainText() or self._detected_text
@@ -316,26 +343,31 @@ class ActionToolbar(QWidget):
             clipboard.setText(text)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Text copied to clipboard!")
+            QTimer.singleShot(1200, self.close)
 
     def _on_copy(self):
         clipboard = QApplication.clipboard()
         if self.text_preview.isVisible() and (self.text_preview.toPlainText() or self._detected_text):
             clipboard.setText(self.text_preview.toPlainText() or self._detected_text)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
-            self.status.setText("✓ Text copied to clipboard")
+            self.status.setText("✓ Text copied to clipboard!")
         else:
             clipboard.setPixmap(self._crop_pixmap)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
-            self.status.setText("✓ Image copied to clipboard")
+            self.status.setText("✓ Image copied to clipboard!")
+        QTimer.singleShot(1200, self.close)
 
     def _on_save(self):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"Snip_{timestamp}.png"
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Snip As", "snip.png", "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)"
+            self, "Save Snip As", default_filename, "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)"
         )
         if file_path:
             self._crop_pixmap.save(file_path)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Saved successfully")
+            QTimer.singleShot(1000, self.close)
 
     def _on_cancel(self):
         self.close()
@@ -345,5 +377,16 @@ class ActionToolbar(QWidget):
             self._on_cancel()
 
     def closeEvent(self, event):
+        # Safely detach threads to prevent C++ destruction crashes
+        if self._ocr_thread:
+            try:
+                self._ocr_thread.done.disconnect()
+            except Exception:
+                pass
+        if self._search_thread:
+            try:
+                self._search_thread.done.disconnect()
+            except Exception:
+                pass
         self.closed.emit()
         super().closeEvent(event)

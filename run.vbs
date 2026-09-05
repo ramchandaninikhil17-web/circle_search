@@ -16,4 +16,12 @@ Else
     strPythonW = "pythonw.exe"
 End If
 
-WshShell.Run strPythonW & " """ & strScriptDir & "\main.py""", 0, False
+strArgs = "--tray"
+If WScript.Arguments.Count > 0 Then
+    strArgs = ""
+    For Each arg In WScript.Arguments
+        strArgs = strArgs & " " & arg
+    Next
+End If
+
+WshShell.Run strPythonW & " """ & strScriptDir & "\main.py"" " & strArgs, 0, False

@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 
+
 def find_pythonw():
     # 1. Same dir as current python executable
     cur_dir = os.path.dirname(sys.executable)
@@ -23,6 +24,7 @@ def find_pythonw():
     # 3. Default fallback
     return "pythonw.exe"
 
+
 def create_windows_shortcut(target_path, arguments, shortcut_path, working_dir, icon_path, description):
     ps_command = f"""
 $ws = New-Object -ComObject WScript.Shell
@@ -35,6 +37,7 @@ $s.Description = '{description}'
 $s.Save()
 """
     subprocess.run(["powershell", "-NoProfile", "-Command", ps_command], check=True)
+
 
 def main():
     project_dir = os.path.dirname(os.path.abspath(__file__))
@@ -56,7 +59,7 @@ def main():
         try:
             create_windows_shortcut(
                 target_path=pythonw_path,
-                arguments=f'"{main_py}"',
+                arguments=f'"{main_py}" --trigger',
                 shortcut_path=shortcut,
                 working_dir=project_dir,
                 icon_path=icon_ico,
@@ -65,6 +68,7 @@ def main():
             print(f"[OK] Shortcut created: {shortcut}")
         except Exception as e:
             print(f"[ERR] Failed to create {shortcut}: {e}")
+
 
 if __name__ == "__main__":
     main()
