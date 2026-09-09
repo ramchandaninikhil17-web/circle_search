@@ -63,7 +63,7 @@ def main():
                 shortcut_path=shortcut,
                 working_dir=project_dir,
                 icon_path=icon_ico,
-                description="Circle to Search - Google Lens for Windows (Ctrl+Alt+C)",
+                description="Circle to Search - Google Lens for Windows (Ctrl+Shift+S)",
             )
             print(f"[OK] Shortcut created: {shortcut}")
         except Exception as e:

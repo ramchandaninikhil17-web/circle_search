@@ -18,10 +18,10 @@ REG_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_APP_NAME = "CircleToSearchWindows"
 
 DEFAULT_SETTINGS = {
-    # Unique combo: Ctrl+Alt+C
-    "hotkey_mods": MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-    "hotkey_vk": 0x43,  # 'C'
-    "hotkey_label": "Ctrl+Alt+C",
+    # Default global hotkey: Ctrl+Shift+S
+    "hotkey_mods": MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+    "hotkey_vk": 0x53,  # 'S'
+    "hotkey_label": "Ctrl+Shift+S",
     "auto_open_browser": True,
     "keep_screenshots": False,
     "ocr_min_chars_for_text_suggestion": 2,
@@ -63,11 +63,22 @@ def set_autostart_enabled(enabled: bool) -> bool:
         return False
 
 
-def _clean_label(label: str, vk: int) -> str:
-    if not label or any(ord(c) < 32 for c in label):
-        letter = chr(vk) if (0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39) else "C"
-        return f"Ctrl+Alt+{letter}"
-    return label
+def _clean_label(label: str, vk: int, mods: int = 0) -> str:
+    if not label or any(ord(c) < 32 or ord(c) > 126 for c in label):
+        letter = chr(vk) if (0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39) else "S"
+        parts = []
+        if mods & MOD_CONTROL:
+            parts.append("Ctrl")
+        if mods & MOD_SHIFT:
+            parts.append("Shift")
+        if mods & MOD_ALT:
+            parts.append("Alt")
+        if mods & MOD_WIN:
+            parts.append("Win")
+        if not parts:
+            parts = ["Ctrl", "Shift"]
+        return "+".join(parts) + f"+{letter}"
+    return label.strip()
 
 
 def load_settings() -> dict:
@@ -83,7 +94,13 @@ def load_settings() -> dict:
             data = json.load(f)
         merged.update(data)
         merged["start_with_windows"] = is_autostart_enabled()
-        merged["hotkey_label"] = _clean_label(merged.get("hotkey_label", ""), merged.get("hotkey_vk", 0x43))
+        merged["hotkey_label"] = _clean_label(
+            merged.get("hotkey_label", ""),
+            merged.get("hotkey_vk", 0x53),
+            merged.get("hotkey_mods", DEFAULT_SETTINGS["hotkey_mods"]),
+        )
+        if merged.get("preferred_mode") not in ("circle", "rect"):
+            merged["preferred_mode"] = "circle"
         return merged
     except Exception:
         return merged

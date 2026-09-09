@@ -54,8 +54,8 @@ class TrayApp:
         self.tray = QSystemTrayIcon(get_app_icon())
         self.tray.setToolTip("Circle to Search - Google Lens")
 
-        menu = QMenu()
-        menu.setStyleSheet(
+        self.menu = QMenu()
+        self.menu.setStyleSheet(
             """
             QMenu {
               background-color: #FFFFFF;
@@ -82,19 +82,19 @@ class TrayApp:
             """
         )
 
-        act_capture = QAction("🔍 Capture now", menu)
-        act_capture.triggered.connect(on_capture)
-        act_settings = QAction("⚙ Settings…", menu)
-        act_settings.triggered.connect(on_settings)
-        act_quit = QAction("✕ Exit", menu)
-        act_quit.triggered.connect(on_quit)
+        self.act_capture = QAction("🔍 Capture now", self.menu)
+        self.act_capture.triggered.connect(on_capture)
+        self.act_settings = QAction("⚙ Settings…", self.menu)
+        self.act_settings.triggered.connect(on_settings)
+        self.act_quit = QAction("✕ Exit", self.menu)
+        self.act_quit.triggered.connect(on_quit)
 
-        menu.addAction(act_capture)
-        menu.addAction(act_settings)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        self.menu.addAction(self.act_capture)
+        self.menu.addAction(self.act_settings)
+        self.menu.addSeparator()
+        self.menu.addAction(self.act_quit)
 
-        self.tray.setContextMenu(menu)
+        self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 

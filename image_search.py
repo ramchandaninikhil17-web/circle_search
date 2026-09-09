@@ -1,11 +1,12 @@
 """Reverse image search using Google Lens and visual search engines.
-Prioritizes direct Google Lens upload (lens.google.com/v3/upload) for privacy, speed, and zero leaks,
-with CDN fallbacks and offline clipboard handling.
+Uploads the cropped image to a high-speed CDN and opens Google Lens
+with the direct image URL so Google renders and searches the actual image.
+Includes automatic fallback to local clipboard paste if offline.
 """
-import base64
 import io
 import json
 import os
+import socket
 import tempfile
 import urllib.request
 import urllib.parse
@@ -15,67 +16,50 @@ from PIL import Image
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 
+# Set network socket timeout to avoid indefinite hanging
+socket.setdefaulttimeout(7.0)
+
 
 def search_image(pil_image: Image.Image) -> tuple[bool, str]:
     """Uploads the image and opens Google Lens in default browser.
     Returns (success: bool, status_message: str).
     """
-    # Convert image to high-clarity JPEG without costly optimize=True
+    if pil_image is None:
+        return False, "Invalid image"
+
+    # Composite alpha over clean white background so transparent crops look crisp
     buf = io.BytesIO()
-    rgb_img = pil_image.convert("RGB")
+    if pil_image.mode in ("RGBA", "LA") or (pil_image.mode == "P" and "transparency" in pil_image.info):
+        bg = Image.new("RGB", pil_image.size, (255, 255, 255))
+        alpha = pil_image.convert("RGBA").split()[3]
+        bg.paste(pil_image.convert("RGB"), mask=alpha)
+        rgb_img = bg
+    else:
+        rgb_img = pil_image.convert("RGB")
+
     rgb_img.save(buf, format="JPEG", quality=92, subsampling=0)
     img_bytes = buf.getvalue()
 
-    # 1. Primary: Direct Google Lens upload (secure, private, no 3rd-party host leaks)
+    # 1. Primary: High-speed CDN hosts for Google Lens uploadbyurl
     try:
-        lens_direct_url = _upload_direct_google_lens(img_bytes)
-        if lens_direct_url:
-            webbrowser.open(lens_direct_url)
+        direct_image_url = _upload_multi_provider(img_bytes)
+        if direct_image_url:
+            lens_url = f"https://lens.google.com/uploadbyurl?url={urllib.parse.quote_plus(direct_image_url)}"
+            webbrowser.open(lens_url)
             return True, "Opened Google Lens"
     except Exception:
         pass
 
-    # 2. Secondary fallback: High-speed CDN hosts
-    direct_image_url = _upload_multi_provider(img_bytes)
-    if direct_image_url:
-        lens_url = f"https://lens.google.com/uploadbyurl?url={urllib.parse.quote_plus(direct_image_url)}"
-        webbrowser.open(lens_url)
-        return True, "Opened Google Lens"
-
-    # 3. Offline / network fallback: open Lens with clipboard paste
+    # 2. Offline / network fallback: open Lens with clipboard paste instructions
     return _fallback_lens_tab(pil_image)
 
 
-def _upload_direct_google_lens(img_bytes: bytes) -> str | None:
-    """Uploads directly to Google Lens v3 endpoint just like Chrome/Edge does."""
-    boundary = "----WebKitFormBoundaryCircleToSearchLens"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="encoded_image"; filename="image.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
-
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    req = urllib.request.Request("https://lens.google.com/v3/upload", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=6) as res:
-        final_url = res.geturl()
-        if final_url and ("lens.google.com" in final_url or "google.com/search" in final_url):
-            return final_url
-    return None
-
-
 def _upload_multi_provider(img_bytes: bytes) -> str | None:
-    """Tries backup image hosting CDNs in sequence."""
+    """Tries fast, public image hosting CDNs in sequence."""
     providers = [
-        _upload_freeimage,
-        _upload_imgbb,
-        _upload_postimages,
-        _upload_litterbox,
+        _upload_tmpfiles,
         _upload_catbox,
+        _upload_uguu,
     ]
 
     for provider in providers:
@@ -89,54 +73,10 @@ def _upload_multi_provider(img_bytes: bytes) -> str | None:
     return None
 
 
-def _upload_freeimage(img_bytes: bytes) -> str | None:
-    b64_img = base64.b64encode(img_bytes).decode("utf-8")
-    data = urllib.parse.urlencode({
-        "key": "6d207e02198a847aa98d0a2a901485a5",
-        "action": "upload",
-        "source": b64_img,
-        "format": "json",
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://freeimage.host/api/1/upload",
-        data=data,
-        headers={"User-Agent": USER_AGENT},
-    )
-    with urllib.request.urlopen(req, timeout=5) as res:
-        if res.getcode() == 200:
-            parsed = json.loads(res.read().decode("utf-8"))
-            if parsed.get("status_code") == 200 or parsed.get("image"):
-                return parsed.get("image", {}).get("url") or parsed.get("image", {}).get("display_url")
-    return None
-
-
-def _upload_imgbb(img_bytes: bytes) -> str | None:
-    b64_img = base64.b64encode(img_bytes).decode("utf-8")
-    data = urllib.parse.urlencode({
-        "key": "d3b1076f874d1e2e92c2b7405c10aa39",
-        "image": b64_img,
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://api.imgbb.com/1/upload",
-        data=data,
-        headers={"User-Agent": USER_AGENT},
-    )
-    with urllib.request.urlopen(req, timeout=5) as res:
-        if res.getcode() == 200:
-            parsed = json.loads(res.read().decode("utf-8"))
-            if parsed.get("data"):
-                return parsed["data"].get("url") or parsed["data"].get("display_url")
-    return None
-
-
-def _upload_postimages(img_bytes: bytes) -> str | None:
-    boundary = "----WebKitFormBoundaryCirclePostImg7"
+def _upload_tmpfiles(img_bytes: bytes) -> str | None:
+    """Instant temporary file host that provides direct image links."""
+    boundary = "----WebKitFormBoundaryCircleTmpFiles"
     body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="numfiles"\r\n\r\n'
-        f"1\r\n"
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="search.jpg"\r\n'
         f"Content-Type: image/jpeg\r\n\r\n"
@@ -147,42 +87,19 @@ def _upload_postimages(img_bytes: bytes) -> str | None:
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         "Accept": "application/json",
     }
-    req = urllib.request.Request("https://postimages.org/json/rr", data=body, headers=headers)
+    req = urllib.request.Request("https://tmpfiles.org/api/v1/upload", data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as res:
         if res.getcode() == 200:
             parsed = json.loads(res.read().decode("utf-8"))
-            return parsed.get("url")
-    return None
-
-
-def _upload_litterbox(img_bytes: bytes) -> str | None:
-    boundary = "----WebKitFormBoundaryCircleLitterbox"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="reqtype"\r\n\r\n'
-        f"fileupload\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="time"\r\n\r\n'
-        f"1h\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="fileToUpload"; filename="search.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
-
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-    }
-    req = urllib.request.Request("https://litterbox.catbox.moe/resources/internals/api.php", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as res:
-        if res.getcode() == 200:
-            url = res.read().decode("utf-8").strip()
-            if url.startswith("http"):
-                return url
+            url = parsed.get("data", {}).get("url")
+            if url and "tmpfiles.org/" in url:
+                # Convert view URL to direct download stream URL for Google crawler
+                return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
     return None
 
 
 def _upload_catbox(img_bytes: bytes) -> str | None:
+    """Catbox image host."""
     boundary = "----WebKitFormBoundaryCircleCatbox"
     body = (
         f"--{boundary}\r\n"
@@ -203,6 +120,29 @@ def _upload_catbox(img_bytes: bytes) -> str | None:
             url = res.read().decode("utf-8").strip()
             if url.startswith("http"):
                 return url
+    return None
+
+
+def _upload_uguu(img_bytes: bytes) -> str | None:
+    """Uguu temporary image hosting."""
+    boundary = "----WebKitFormBoundaryCircleUguu"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="files[]"; filename="search.jpg"\r\n'
+        f"Content-Type: image/jpeg\r\n\r\n"
+    ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+    }
+    req = urllib.request.Request("https://uguu.se/upload", data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as res:
+        if res.getcode() == 200:
+            parsed = json.loads(res.read().decode("utf-8"))
+            files = parsed.get("files", [])
+            if files and files[0].get("url"):
+                return files[0]["url"]
     return None
 
 

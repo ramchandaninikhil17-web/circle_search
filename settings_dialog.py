@@ -1,7 +1,7 @@
 import ctypes
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QComboBox
 )
 
 from config import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT, DEFAULT_SETTINGS
@@ -15,10 +15,10 @@ class HotkeyCaptureLabel(QLabel):
         super().__init__("Click here, then press a key combo…")
         self.setStyleSheet(
             "QLabel {"
-            "  background-color: #F8F9FA;"
+            "  background-color: #FFFFFF;"
             "  color: #3C4043;"
             "  border: 1.5px solid #DADCE0;"
-            "  padding: 12px;"
+            "  padding: 10px 14px;"
             "  border-radius: 8px;"
             "  font-family: 'Segoe UI', Roboto, sans-serif;"
             "  font-size: 13px;"
@@ -115,7 +115,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Circle to Search - Settings")
         self._settings = dict(settings)
         self._on_apply = on_apply
-        self.setFixedWidth(420)
+        self.setFixedWidth(440)
 
         self.setStyleSheet(
             """
@@ -126,6 +126,23 @@ class SettingsDialog(QDialog):
             QLabel {
               color: #202124;
               font-size: 13px;
+            }
+            QComboBox {
+              background-color: #FFFFFF;
+              color: #202124;
+              border: 1.5px solid #DADCE0;
+              border-radius: 8px;
+              padding: 6px 12px;
+              font-size: 13px;
+            }
+            QComboBox:focus {
+              border: 2px solid #1A73E8;
+            }
+            QComboBox QAbstractItemView {
+              background-color: #FFFFFF;
+              border: 1px solid #DADCE0;
+              selection-background-color: #E8F0FE;
+              selection-color: #1A73E8;
             }
             QCheckBox {
               color: #3C4043;
@@ -174,14 +191,30 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(22, 22, 22, 22)
         layout.setSpacing(14)
 
-        lbl_curr = QLabel(f"<b>Current shortcut:</b> <span style='color:#1A73E8;'>{self._settings.get('hotkey_label', 'Ctrl+Alt+C')}</span>")
+        lbl_curr = QLabel(f"<b>Current shortcut:</b> <span style='color:#1A73E8;'>{self._settings.get('hotkey_label', 'Ctrl+Shift+S')}</span>")
         layout.addWidget(lbl_curr)
 
         lbl_new = QLabel("<b>Set new shortcut:</b>")
         layout.addWidget(lbl_new)
 
         self.capture = HotkeyCaptureLabel()
+        self.capture.set_combo(
+            self._settings.get("hotkey_mods", DEFAULT_SETTINGS["hotkey_mods"]),
+            self._settings.get("hotkey_vk", DEFAULT_SETTINGS["hotkey_vk"]),
+            self._settings.get("hotkey_label", DEFAULT_SETTINGS["hotkey_label"])
+        )
         layout.addWidget(self.capture)
+
+        lbl_mode = QLabel("<b>Default snip mode:</b>")
+        layout.addWidget(lbl_mode)
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem("⭕ Circle / Lasso (Freehand)", "circle")
+        self.combo_mode.addItem("◻️ Rectangle (Precision)", "rect")
+        pref_mode = self._settings.get("preferred_mode", "circle")
+        idx = self.combo_mode.findData(pref_mode)
+        if idx >= 0:
+            self.combo_mode.setCurrentIndex(idx)
+        layout.addWidget(self.combo_mode)
 
         self.chk_autostart = QCheckBox("Start with Windows (System Tray)")
         self.chk_autostart.setChecked(self._settings.get("start_with_windows", False))
@@ -220,12 +253,17 @@ class SettingsDialog(QDialog):
         def_vk = DEFAULT_SETTINGS["hotkey_vk"]
         def_label = DEFAULT_SETTINGS["hotkey_label"]
         self.capture.set_combo(def_mods, def_vk, def_label)
+        idx = self.combo_mode.findData("circle")
+        if idx >= 0:
+            self.combo_mode.setCurrentIndex(idx)
 
     def _save(self):
         if self.capture.vk:
             self._settings["hotkey_mods"] = self.capture.mods
             self._settings["hotkey_vk"] = self.capture.vk
             self._settings["hotkey_label"] = self.capture.text()
+
+        self._settings["preferred_mode"] = self.combo_mode.currentData()
 
         autostart = self.chk_autostart.isChecked()
         self._settings["start_with_windows"] = autostart

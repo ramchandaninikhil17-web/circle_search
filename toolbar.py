@@ -24,8 +24,11 @@ class OcrWorker(QThread):
         self._img = pil_image
 
     def run(self):
-        text = ocr_mod.recognize_text(self._img)
-        self.done.emit(text)
+        try:
+            text = ocr_mod.recognize_text(self._img)
+            self.done.emit(text)
+        except Exception:
+            self.done.emit("")
 
 
 class SearchWorker(QThread):
@@ -36,8 +39,11 @@ class SearchWorker(QThread):
         self._img = pil_image
 
     def run(self):
-        ok, msg = image_search.search_image(self._img)
-        self.done.emit(ok, msg)
+        try:
+            ok, msg = image_search.search_image(self._img)
+            self.done.emit(ok, msg)
+        except Exception as e:
+            self.done.emit(False, str(e))
 
 
 class ActionToolbar(QWidget):
@@ -66,6 +72,7 @@ class ActionToolbar(QWidget):
         self.status.setText("🔍 Scanning text…")
         self._ocr_thread = OcrWorker(self._crop_pil)
         self._ocr_thread.done.connect(self._on_ocr_done)
+        self._ocr_thread.finished.connect(self._ocr_thread.deleteLater)
         self._ocr_thread.start()
 
     # ---- UI ---------------------------------------------------------
@@ -98,6 +105,11 @@ class ActionToolbar(QWidget):
             }
             QPushButton:pressed {
               background-color: #E8EAED;
+            }
+            QPushButton:disabled {
+              background-color: #F1F3F4;
+              color: #9AA0A6;
+              border-color: #E8EAED;
             }
             QPushButton#btn_primary {
               background-color: #1A73E8;
@@ -284,8 +296,11 @@ class ActionToolbar(QWidget):
             words = len(self._detected_text.split())
             self.btn_text.setText(f"✨ Text ({words}w)")
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
-            preview_snippet = self._detected_text.replace("\n", " ")[:40]
-            self.status.setText(f"✓ Text: \"{preview_snippet}...\"" if len(self._detected_text) > 40 else f"✓ Text: \"{preview_snippet}\"")
+            preview_snippet = self._detected_text.replace("\n", " ").strip()
+            if len(preview_snippet) > 40:
+                self.status.setText(f'✓ Text: "{preview_snippet[:37]}…"')
+            else:
+                self.status.setText(f'✓ Text: "{preview_snippet}"')
         else:
             self.status.setStyleSheet("color: #5F6368; font-weight: 500;")
             self.status.setText("Visual selection ready")
@@ -302,12 +317,14 @@ class ActionToolbar(QWidget):
 
         self._search_thread = SearchWorker(self._crop_pil)
         self._search_thread.done.connect(self._on_search_done)
+        self._search_thread.finished.connect(self._search_thread.deleteLater)
         self._search_thread.start()
 
     def _on_search_done(self, ok: bool, message: str):
         if ok:
-            # Auto-close on successful search trigger
-            self.close()
+            self.status.setStyleSheet("color: #188038; font-weight: 600;")
+            self.status.setText(f"✓ {message}")
+            QTimer.singleShot(400, self.close)
         else:
             self.btn_image.setEnabled(True)
             self.btn_image.setText("🔍 Google Lens")
@@ -324,10 +341,17 @@ class ActionToolbar(QWidget):
             return
 
         is_visible = self.text_preview.isVisible()
-        self.text_preview.setPlainText(self._detected_text)
-        self.text_preview.setVisible(not is_visible)
-        self.btn_copy_text.setVisible(not is_visible)
-        self.btn_search_text.setVisible(not is_visible)
+        if not is_visible:
+            # Preserve user modifications if they already typed/edited in text preview
+            if not self.text_preview.toPlainText().strip():
+                self.text_preview.setPlainText(self._detected_text)
+            self.text_preview.setVisible(True)
+            self.btn_copy_text.setVisible(True)
+            self.btn_search_text.setVisible(True)
+        else:
+            self.text_preview.setVisible(False)
+            self.btn_copy_text.setVisible(False)
+            self.btn_search_text.setVisible(False)
         self._reclamp_to_screen()
 
     def _on_search_text(self):
@@ -341,33 +365,39 @@ class ActionToolbar(QWidget):
         if text:
             clipboard = QApplication.clipboard()
             clipboard.setText(text)
+            self.btn_copy_text.setEnabled(False)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Text copied to clipboard!")
-            QTimer.singleShot(1200, self.close)
+            QTimer.singleShot(900, self.close)
 
     def _on_copy(self):
         clipboard = QApplication.clipboard()
         if self.text_preview.isVisible() and (self.text_preview.toPlainText() or self._detected_text):
             clipboard.setText(self.text_preview.toPlainText() or self._detected_text)
+            self.btn_copy.setEnabled(False)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Text copied to clipboard!")
         else:
             clipboard.setPixmap(self._crop_pixmap)
+            self.btn_copy.setEnabled(False)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Image copied to clipboard!")
-        QTimer.singleShot(1200, self.close)
+        QTimer.singleShot(900, self.close)
 
     def _on_save(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         default_filename = f"Snip_{timestamp}.png"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Snip As", default_filename, "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)"
-        )
-        if file_path:
-            self._crop_pixmap.save(file_path)
-            self.status.setStyleSheet("color: #188038; font-weight: 600;")
-            self.status.setText("✓ Saved successfully")
-            QTimer.singleShot(1000, self.close)
+        dialog = QFileDialog(self, "Save Snip As", default_filename, "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        if dialog.exec() == QFileDialog.Accepted:
+            selected = dialog.selectedFiles()
+            if selected and selected[0]:
+                self._crop_pixmap.save(selected[0])
+                self.btn_save.setEnabled(False)
+                self.status.setStyleSheet("color: #188038; font-weight: 600;")
+                self.status.setText("✓ Saved successfully")
+                QTimer.singleShot(800, self.close)
 
     def _on_cancel(self):
         self.close()
@@ -378,15 +408,19 @@ class ActionToolbar(QWidget):
 
     def closeEvent(self, event):
         # Safely detach threads to prevent C++ destruction crashes
-        if self._ocr_thread:
+        if self._ocr_thread and self._ocr_thread.isRunning():
             try:
                 self._ocr_thread.done.disconnect()
             except Exception:
                 pass
-        if self._search_thread:
+            self._ocr_thread.wait(250)
+
+        if self._search_thread and self._search_thread.isRunning():
             try:
                 self._search_thread.done.disconnect()
             except Exception:
                 pass
+            self._search_thread.wait(250)
+
         self.closed.emit()
         super().closeEvent(event)

@@ -2,12 +2,12 @@
 
 High-Performance, Zero-Lag Architecture:
 1. Pre-renders dimmed background once at launch (zero stutter during dragging).
-2. Per-monitor top control bar (centered on the active monitor, never split across bezels).
-3. ⭕ Circle / Lasso: Ultra-smooth neon glow stroke, clean bounding calculation, no polygon flicker.
+2. Per-monitor top control bar (locked during dragging, never split across bezels).
+3. ⭕ Circle / Lasso: Real-time bright cutout punch-through + neon glow stroke + instant bounding calculation.
 4. ◻️ Rectangle: Precision snip with Google Lens corner brackets and live dimension badge.
 5. 🖥️ Full Screen: 1-click full snip.
-6. Multi-monitor & High-DPI 100% pixel-perfect scaling.
-7. Keyboard shortcuts: [1] Circle, [2] Rectangle, [3] Fullscreen, [Esc] Close.
+6. 100% Pixel-Perfect DPI-Aware Scaling: Exact physical coordinates match user cursor with zero shift and zero surrounding bleed.
+7. Keyboard shortcuts: [1/C] Circle, [2/R] Rectangle, [3/F] Fullscreen, [Enter] Snip, [Esc] Close.
 """
 from enum import Enum
 from PySide6.QtCore import Qt, QRect, QPoint, Signal
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QWidget
 
 GOOGLE_BLUE = QColor(26, 115, 232)             # #1A73E8
 GOOGLE_BLUE_GLOW = QColor(66, 133, 244, 90)     # #4285F4 with alpha
-GOOGLE_CYAN_GLOW = QColor(0, 210, 255, 160)
+GOOGLE_CYAN_GLOW = QColor(0, 210, 255, 180)
 GOOGLE_CORNER = QColor(255, 255, 255)
 DIM_COLOR = QColor(15, 23, 42, 135)             # Slate dimming overlay
 
@@ -38,10 +38,11 @@ class SelectionOverlay(QWidget):
         super().__init__()
         self._bg = bg_pixmap
         self._vgeo = vgeo
+        self._dpr = self._bg.devicePixelRatio()
 
         # Pre-render dimmed background once for zero-lag 144Hz/60Hz rendering
         self._dimmed_bg = QPixmap(self._bg.size())
-        self._dimmed_bg.setDevicePixelRatio(self._bg.devicePixelRatio())
+        self._dimmed_bg.setDevicePixelRatio(self._dpr)
         self._dimmed_bg.fill(Qt.transparent)
         p_dim = QPainter(self._dimmed_bg)
         p_dim.drawPixmap(0, 0, self._bg)
@@ -66,19 +67,34 @@ class SelectionOverlay(QWidget):
         self._points: list[QPoint] = []
         self._has_selection = False
 
-        # Top bar buttons hitboxes
+        # Top bar buttons hitboxes & caching
+        self._active_screen_rect = self._get_active_monitor_rect()
+        self._bar_rect = QRect()
         self._btn_circle_rect = QRect()
         self._btn_rect_rect = QRect()
         self._btn_full_rect = QRect()
         self._btn_close_rect = QRect()
         self._hovered_btn = None
-        self._last_active_screen_rect = QRect()
+        self._update_bar_rects(self._active_screen_rect)
 
     def showFullScreenAllMonitors(self):
         self.show()
         self.activateWindow()
         self.raise_()
         self.setFocus(Qt.ActiveWindowFocusReason)
+
+    # ---- coordinate transformation (Logical <-> Physical) ------------
+    def _to_physical_rect(self, logical_rect: QRect) -> QRect:
+        """Maps a logical screen QRect to exact physical pixel coordinates on the framebuffer.
+        Guarantees 100% accurate coordinates without offset or surrounding bleed."""
+        if self._dpr == 1.0:
+            return logical_rect
+        return QRect(
+            int(round(logical_rect.x() * self._dpr)),
+            int(round(logical_rect.y() * self._dpr)),
+            int(round(logical_rect.width() * self._dpr)),
+            int(round(logical_rect.height() * self._dpr)),
+        )
 
     # ---- active monitor helper ---------------------------------------
     def _get_active_monitor_rect(self) -> QRect:
@@ -92,6 +108,34 @@ class SelectionOverlay(QWidget):
         lx = sgeo.x() - self._vgeo.x()
         ly = sgeo.y() - self._vgeo.y()
         return QRect(lx, ly, sgeo.width(), sgeo.height())
+
+    def _update_bar_rects(self, active_screen: QRect):
+        bar_w = 480
+        bar_h = 46
+        cx = active_screen.center().x()
+        bar_y = active_screen.top() + 20
+        self._bar_rect = QRect(cx - bar_w // 2, bar_y, bar_w, bar_h)
+
+        btn_y = self._bar_rect.y() + 6
+        btn_h = 34
+
+        # 1. Circle / Freeform button
+        self._btn_circle_rect = QRect(self._bar_rect.x() + 10, btn_y, 110, btn_h)
+        # 2. Rectangle button
+        self._btn_rect_rect = QRect(self._bar_rect.x() + 126, btn_y, 115, btn_h)
+        # 3. Fullscreen button
+        self._btn_full_rect = QRect(self._bar_rect.x() + 247, btn_y, 120, btn_h)
+        # 4. Close / Cancel button
+        self._btn_close_rect = QRect(self._bar_rect.right() - 85, btn_y, 75, btn_h)
+
+    def set_mode(self, mode: SnipMode):
+        """Switches the selection mode and resets any in-progress selections cleanly."""
+        self._mode = mode
+        self._has_selection = False
+        self._points.clear()
+        self._start = QPoint()
+        self._current = QPoint()
+        self.update()
 
     # ---- painting -------------------------------------------------
     def paintEvent(self, _event):
@@ -110,10 +154,9 @@ class SelectionOverlay(QWidget):
 
         # 3. Top control bar + bottom hint centered on active screen
         p.setRenderHint(QPainter.Antialiasing, True)
-        active_screen = self._get_active_monitor_rect()
-        self._draw_snipping_bar(p, active_screen)
+        self._draw_snipping_bar(p, self._active_screen_rect)
         if not self._dragging:
-            self._draw_bottom_hint(p, active_screen)
+            self._draw_bottom_hint(p, self._active_screen_rect)
 
         p.end()
 
@@ -122,8 +165,9 @@ class SelectionOverlay(QWidget):
         if not rect.isValid() or rect.isEmpty() or rect.width() < 2 or rect.height() < 2:
             return
 
-        # Punch out original crisp bright pixels
-        p.drawPixmap(rect, self._bg, rect)
+        # Punch out original crisp bright pixels using exact physical framebuffer coordinates
+        phys_rect = self._to_physical_rect(rect)
+        p.drawPixmap(rect, self._bg, phys_rect)
 
         # Glowing accent border
         glow_pen = QPen(GOOGLE_BLUE_GLOW, 5)
@@ -146,6 +190,21 @@ class SelectionOverlay(QWidget):
         if len(self._points) < 2:
             return
 
+        # Punch out bright pixels inside the lasso area when 3+ points are drawn
+        bbox = self._points_bounding_box()
+        if len(self._points) >= 3 and bbox.isValid():
+            p.save()
+            cutout_path = QPainterPath()
+            cutout_path.moveTo(self._points[0])
+            for pt in self._points[1:]:
+                cutout_path.lineTo(pt)
+            cutout_path.closeSubpath()
+            p.setClipPath(cutout_path)
+            # Draw bright original pixels inside the circle path using exact physical coordinates
+            phys_bbox = self._to_physical_rect(bbox)
+            p.drawPixmap(bbox, self._bg, phys_bbox)
+            p.restore()
+
         # Build smooth path from freehand points
         path = QPainterPath()
         path.moveTo(self._points[0])
@@ -167,6 +226,10 @@ class SelectionOverlay(QWidget):
         p.setBrush(QColor(255, 255, 255))
         p.setPen(QPen(GOOGLE_BLUE, 2))
         p.drawEllipse(current_pt, 4, 4)
+
+        # Live dimension badge while circling
+        if self._dragging and bbox.isValid() and bbox.width() >= 10:
+            self._draw_dimension_badge(p, bbox)
 
     def _draw_lens_corners(self, p: QPainter, rect: QRect):
         corner_len = min(16, max(6, min(rect.width(), rect.height()) // 4))
@@ -192,7 +255,9 @@ class SelectionOverlay(QWidget):
         font = QFont("Segoe UI", 9, QFont.Bold)
         p.setFont(font)
 
-        badge_w, badge_h = 100, 24
+        fm = p.fontMetrics()
+        badge_w = fm.horizontalAdvance(text) + 24
+        badge_h = 24
         bx = rect.right() - badge_w
         by = rect.bottom() + 8
         if by + badge_h > self.rect().bottom():
@@ -210,11 +275,7 @@ class SelectionOverlay(QWidget):
 
     def _draw_snipping_bar(self, p: QPainter, active_screen: QRect):
         """Draws top control bar centered inside active screen."""
-        bar_w = 480
-        bar_h = 46
-        cx = active_screen.center().x()
-        bar_y = active_screen.top() + 20
-        bar_rect = QRect(cx - bar_w // 2, bar_y, bar_w, bar_h)
+        bar_rect = self._bar_rect
 
         # Card shadow & dark glass background
         p.setPen(QPen(QColor(255, 255, 255, 45), 1))
@@ -224,20 +285,17 @@ class SelectionOverlay(QWidget):
         # Google 4-color top accent line
         accent_h = 2.5
         accent_w = 120
+        cx = bar_rect.center().x()
         accent_x = cx - accent_w // 2
-        p.fillRect(QRect(int(accent_x), bar_y, 30, int(accent_h)), QColor(66, 133, 244))   # Blue
-        p.fillRect(QRect(int(accent_x + 30), bar_y, 30, int(accent_h)), QColor(234, 67, 53))   # Red
-        p.fillRect(QRect(int(accent_x + 60), bar_y, 30, int(accent_h)), QColor(251, 188, 4))  # Yellow
-        p.fillRect(QRect(int(accent_x + 90), bar_y, 30, int(accent_h)), QColor(52, 168, 83))   # Green
+        p.fillRect(QRect(int(accent_x), bar_rect.y(), 30, int(accent_h)), QColor(66, 133, 244))   # Blue
+        p.fillRect(QRect(int(accent_x + 30), bar_rect.y(), 30, int(accent_h)), QColor(234, 67, 53))   # Red
+        p.fillRect(QRect(int(accent_x + 60), bar_rect.y(), 30, int(accent_h)), QColor(251, 188, 4))  # Yellow
+        p.fillRect(QRect(int(accent_x + 90), bar_rect.y(), 30, int(accent_h)), QColor(52, 168, 83))   # Green
 
         font = QFont("Segoe UI", 10, QFont.DemiBold)
         p.setFont(font)
 
-        btn_y = bar_rect.y() + 6
-        btn_h = 34
-
         # 1. Circle / Freeform button
-        self._btn_circle_rect = QRect(bar_rect.x() + 10, btn_y, 110, btn_h)
         self._render_bar_btn(
             p, self._btn_circle_rect, "⭕ Circle [1]",
             is_active=(self._mode == SnipMode.CIRCLE),
@@ -245,7 +303,6 @@ class SelectionOverlay(QWidget):
         )
 
         # 2. Rectangle button
-        self._btn_rect_rect = QRect(bar_rect.x() + 126, btn_y, 115, btn_h)
         self._render_bar_btn(
             p, self._btn_rect_rect, "◻️ Rect [2]",
             is_active=(self._mode == SnipMode.RECTANGLE),
@@ -253,7 +310,6 @@ class SelectionOverlay(QWidget):
         )
 
         # 3. Fullscreen button
-        self._btn_full_rect = QRect(bar_rect.x() + 247, btn_y, 120, btn_h)
         self._render_bar_btn(
             p, self._btn_full_rect, "🖥️ Full [3]",
             is_active=False,
@@ -261,7 +317,6 @@ class SelectionOverlay(QWidget):
         )
 
         # 4. Close / Cancel button
-        self._btn_close_rect = QRect(bar_rect.right() - 85, btn_y, 75, btn_h)
         self._render_bar_btn(
             p, self._btn_close_rect, "✕ Close",
             is_active=False,
@@ -315,17 +370,17 @@ class SelectionOverlay(QWidget):
         return QRect(self._start, self._current).normalized()
 
     def _points_bounding_box(self) -> QRect:
-        """Computes exact bounding box enclosing freehand points with gentle padding."""
+        """Computes exact bounding box enclosing freehand points with zero unwanted padding.
+        Guarantees that ONLY the area circled by the user is selected."""
         if not self._points:
             return QRect()
         min_x = min(pt.x() for pt in self._points)
         max_x = max(pt.x() for pt in self._points)
         min_y = min(pt.y() for pt in self._points)
         max_y = max(pt.y() for pt in self._points)
-        w = max(1, max_x - min_x)
-        h = max(1, max_y - min_y)
-        # Add 4px breathing room so looped strokes encompass edges nicely
-        return QRect(min_x - 4, min_y - 4, w + 8, h + 8).normalized().intersected(self.rect())
+        w = max(1, max_x - min_x + 1)
+        h = max(1, max_y - min_y + 1)
+        return QRect(min_x, min_y, w, h).normalized().intersected(self.rect())
 
     # ---- mouse interaction -------------------------------------------
     def mousePressEvent(self, event):
@@ -338,17 +393,11 @@ class SelectionOverlay(QWidget):
         if event.button() == Qt.LeftButton:
             # Check top bar buttons first
             if self._btn_circle_rect.contains(pos):
-                self._mode = SnipMode.CIRCLE
-                self._has_selection = False
-                self._points.clear()
-                self.update()
+                self.set_mode(SnipMode.CIRCLE)
                 return
 
             if self._btn_rect_rect.contains(pos):
-                self._mode = SnipMode.RECTANGLE
-                self._has_selection = False
-                self._points.clear()
-                self.update()
+                self.set_mode(SnipMode.RECTANGLE)
                 return
 
             if self._btn_full_rect.contains(pos):
@@ -360,11 +409,7 @@ class SelectionOverlay(QWidget):
                 return
 
             # Check if clicked inside bar bounding box
-            active_screen = self._get_active_monitor_rect()
-            cx = active_screen.center().x()
-            bar_y = active_screen.top() + 20
-            bar_box = QRect(cx - 245, bar_y, 490, 50)
-            if bar_box.contains(pos):
+            if self._bar_rect.contains(pos):
                 return
 
             # Start dragging / drawing
@@ -378,23 +423,35 @@ class SelectionOverlay(QWidget):
     def mouseMoveEvent(self, event):
         pos = event.position().toPoint()
 
-        # Update hovered button for top bar
-        old_hover = self._hovered_btn
-        if self._btn_circle_rect.contains(pos):
-            self._hovered_btn = "circle"
-        elif self._btn_rect_rect.contains(pos):
-            self._hovered_btn = "rect"
-        elif self._btn_full_rect.contains(pos):
-            self._hovered_btn = "full"
-        elif self._btn_close_rect.contains(pos):
-            self._hovered_btn = "close"
+        if not self._dragging:
+            # Update active monitor rect and hitboxes only when not dragging
+            new_active = self._get_active_monitor_rect()
+            if new_active != self._active_screen_rect:
+                self._active_screen_rect = new_active
+                self._update_bar_rects(self._active_screen_rect)
+
+            # Update hovered button for top bar
+            old_hover = self._hovered_btn
+            if self._btn_circle_rect.contains(pos):
+                self._hovered_btn = "circle"
+            elif self._btn_rect_rect.contains(pos):
+                self._hovered_btn = "rect"
+            elif self._btn_full_rect.contains(pos):
+                self._hovered_btn = "full"
+            elif self._btn_close_rect.contains(pos):
+                self._hovered_btn = "close"
+            else:
+                self._hovered_btn = None
+
+            # Cursor feedback: pointing hand on buttons, crosshair on canvas
+            if self._hovered_btn:
+                self.setCursor(QCursor(Qt.PointingHandCursor))
+            else:
+                self.setCursor(QCursor(Qt.CrossCursor))
+
+            if old_hover != self._hovered_btn:
+                self.update()
         else:
-            self._hovered_btn = None
-
-        if old_hover != self._hovered_btn:
-            self.update()
-
-        if self._dragging:
             self._current = pos
             if self._mode == SnipMode.CIRCLE:
                 if not self._points or (pos - self._points[-1]).manhattanLength() >= 2:
@@ -405,20 +462,25 @@ class SelectionOverlay(QWidget):
         if event.button() == Qt.LeftButton and self._dragging:
             self._dragging = False
 
-            if self._mode == SnipMode.CIRCLE and len(self._points) >= 4:
+            is_circle = (self._mode == SnipMode.CIRCLE and len(self._points) >= 2)
+            if is_circle:
                 rect = self._points_bounding_box()
             else:
                 rect = self._current_rect()
 
-            if rect.width() < 8 or rect.height() < 8:
+            if rect.width() < 6 or rect.height() < 6:
                 # Accidental micro-click, reset selection
                 self._has_selection = False
                 self._points.clear()
                 self.update()
                 return
 
-            # Extract exact native pixel crop
-            crop_pixmap = self._bg.copy(rect)
+            # Extract exact native pixel crop using logical coordinates
+            # QPixmap.copy() works in logical (device-independent) coords;
+            # it internally applies DPR to read the correct physical pixels.
+            logical_rect = rect.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
+            crop_pixmap = self._bg.copy(logical_rect)
+            crop_pixmap.setDevicePixelRatio(self._dpr)
 
             # Absolute virtual coordinates for floating toolbar positioning
             abs_rect = QRect(
@@ -430,8 +492,10 @@ class SelectionOverlay(QWidget):
             self.selection_made.emit(crop_pixmap, abs_rect)
 
     def _capture_fullscreen(self):
-        active_screen = self._get_active_monitor_rect()
-        crop_pixmap = self._bg.copy(active_screen)
+        active_screen = self._active_screen_rect
+        logical_rect = active_screen.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
+        crop_pixmap = self._bg.copy(logical_rect)
+        crop_pixmap.setDevicePixelRatio(self._dpr)
         abs_rect = QRect(
             active_screen.x() + self._vgeo.x(),
             active_screen.y() + self._vgeo.y(),
@@ -449,10 +513,27 @@ class SelectionOverlay(QWidget):
         if key == Qt.Key_Escape:
             self._cancel_and_close()
         elif key in (Qt.Key_1, Qt.Key_C):
-            self._mode = SnipMode.CIRCLE
-            self.update()
+            self.set_mode(SnipMode.CIRCLE)
         elif key in (Qt.Key_2, Qt.Key_R):
-            self._mode = SnipMode.RECTANGLE
-            self.update()
+            self.set_mode(SnipMode.RECTANGLE)
         elif key in (Qt.Key_3, Qt.Key_F):
             self._capture_fullscreen()
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            if self._has_selection:
+                if self._mode == SnipMode.CIRCLE and len(self._points) >= 2:
+                    rect = self._points_bounding_box()
+                else:
+                    rect = self._current_rect()
+                if rect.width() >= 6 and rect.height() >= 6:
+                    logical_rect = rect.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
+                    crop_pixmap = self._bg.copy(logical_rect)
+                    crop_pixmap.setDevicePixelRatio(self._dpr)
+                    abs_rect = QRect(
+                        rect.x() + self._vgeo.x(),
+                        rect.y() + self._vgeo.y(),
+                        rect.width(),
+                        rect.height(),
+                    )
+                    self.selection_made.emit(crop_pixmap, abs_rect)
+            else:
+                self._capture_fullscreen()

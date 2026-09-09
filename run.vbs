@@ -10,6 +10,10 @@ If FSO.FileExists(strLocalApp & "\Programs\Python\Python314\pythonw.exe") Then
     strPythonW = """" & strLocalApp & "\Programs\Python\Python314\pythonw.exe"""
 ElseIf FSO.FileExists(strLocalApp & "\Programs\Python\Python313\pythonw.exe") Then
     strPythonW = """" & strLocalApp & "\Programs\Python\Python313\pythonw.exe"""
+ElseIf FSO.FileExists(strLocalApp & "\Programs\Python\Python312\pythonw.exe") Then
+    strPythonW = """" & strLocalApp & "\Programs\Python\Python312\pythonw.exe"""
+ElseIf FSO.FileExists(strLocalApp & "\Programs\Python\Python311\pythonw.exe") Then
+    strPythonW = """" & strLocalApp & "\Programs\Python\Python311\pythonw.exe"""
 ElseIf FSO.FileExists(strLocalApp & "\Programs\Python\Python310\pythonw.exe") Then
     strPythonW = """" & strLocalApp & "\Programs\Python\Python310\pythonw.exe"""
 Else

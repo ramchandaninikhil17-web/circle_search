@@ -24,7 +24,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 import config as cfg
 from capture import grab_virtual_desktop_qt
 from hotkey import HotkeyListener
-from overlay import SelectionOverlay
+from overlay import SelectionOverlay, SnipMode
 from toolbar import ActionToolbar
 from tray import TrayApp, get_app_icon
 from settings_dialog import SettingsDialog
@@ -103,7 +103,7 @@ class App:
 
     # ---- activation flow -------------------------------------------------
     def _on_activate(self):
-        # If an overlay is currently open, ignore duplicate triggers
+        # If an overlay is currently open, bring it to focus
         if self._overlay is not None:
             self._overlay.raise_()
             self._overlay.activateWindow()
@@ -121,14 +121,19 @@ class App:
             self._busy = False
             return
 
-        self._overlay = SelectionOverlay(bg_pixmap, vgeo)
+        pref_mode = SnipMode.RECTANGLE if self.settings.get("preferred_mode") == "rect" else SnipMode.CIRCLE
+        self._overlay = SelectionOverlay(bg_pixmap, vgeo, default_mode=pref_mode)
         self._overlay.selection_made.connect(self._on_selection)
         self._overlay.cancelled.connect(self._on_overlay_closed)
-        self._overlay.destroyed.connect(self._on_overlay_closed)
         self._overlay.showFullScreenAllMonitors()
 
     def _on_selection(self, crop_pixmap, abs_rect):
         if self._overlay:
+            try:
+                self._overlay.selection_made.disconnect()
+                self._overlay.cancelled.disconnect()
+            except Exception:
+                pass
             self._overlay.close()
             self._overlay = None
 
@@ -149,10 +154,10 @@ class App:
         self._busy = False
 
     def _open_settings(self):
-        dlg = SettingsDialog(self.settings, self._apply_new_hotkey)
+        dlg = SettingsDialog(self.settings, self._apply_new_settings)
         dlg.exec()
 
-    def _apply_new_hotkey(self, settings: dict):
+    def _apply_new_settings(self, settings: dict):
         self.settings = settings
         self.hotkey.update(settings["hotkey_mods"], settings["hotkey_vk"])
 

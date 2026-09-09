@@ -43,7 +43,7 @@ def _get_ocr_engine():
 def _preprocess_image(pil_image: Image.Image) -> list[Image.Image]:
     """Generates optimized image variants only when necessary."""
     rgb_img = pil_image.convert("RGB")
-    variants = [rgb_img]
+    variants = []
 
     w, h = rgb_img.size
 
@@ -103,16 +103,27 @@ async def _recognize_async(pil_image: Image.Image) -> str:
     if engine is None:
         return ""
 
-    variants = _preprocess_image(pil_image)
+    # 1. First pass: try original raw image directly (covers ~90% cases with zero pre-processing overhead)
     best_text = ""
+    try:
+        raw_text = await _run_windows_ocr(pil_image.convert("RGB"), engine)
+        if raw_text:
+            best_text = raw_text.strip()
+            # If good words or numbers found, return immediately
+            if len(best_text) >= 4:
+                return best_text
+    except Exception:
+        pass
 
-    for i, variant in enumerate(variants):
+    # 2. Second pass: try enhanced variants only if raw pass found little or nothing
+    variants = _preprocess_image(pil_image)
+    for variant in variants:
         try:
             text = await _run_windows_ocr(variant, engine)
             if text:
-                if len(text) > len(best_text):
-                    best_text = text
-                # If first variant (raw image) found good text with words or digits, stop immediately
+                cleaned = text.strip()
+                if len(cleaned) > len(best_text):
+                    best_text = cleaned
                 if len(best_text) >= 4:
                     return best_text
         except Exception:
@@ -123,10 +134,15 @@ async def _recognize_async(pil_image: Image.Image) -> str:
 
 def recognize_text(pil_image: Image.Image) -> str:
     """Synchronous entry point for text recognition.
-    Returns cleaned text string, or empty string if no text found."""
+    Safe to call from background worker threads with isolated event loop."""
     if pil_image is None or pil_image.width < 4 or pil_image.height < 4:
         return ""
     try:
-        return asyncio.run(_recognize_async(pil_image))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_recognize_async(pil_image))
+        finally:
+            loop.close()
     except Exception:
         return ""
