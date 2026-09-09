@@ -96,6 +96,11 @@ class SelectionOverlay(QWidget):
             int(round(logical_rect.height() * self._dpr)),
         )
 
+    def _to_physical_point(self, pt: QPoint) -> QPoint:
+        if self._dpr == 1.0:
+            return pt
+        return QPoint(int(round(pt.x() * self._dpr)), int(round(pt.y() * self._dpr)))
+
     # ---- active monitor helper ---------------------------------------
     def _get_active_monitor_rect(self) -> QRect:
         """Finds the local coordinate rectangle of the monitor under mouse cursor."""
@@ -458,6 +463,37 @@ class SelectionOverlay(QWidget):
                     self._points.append(pos)
             self.update()
 
+    def _extract_crop(self, rect: QRect, is_circle: bool = False) -> QPixmap:
+        phys_rect = self._to_physical_rect(rect).intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
+        if phys_rect.isEmpty() or phys_rect.width() < 2 or phys_rect.height() < 2:
+            return QPixmap()
+
+        if is_circle and len(self._points) >= 3:
+            # Mask out everything outside the user-drawn circle with clean white
+            cropped = QPixmap(phys_rect.size())
+            cropped.setDevicePixelRatio(self._dpr)
+            cropped.fill(QColor(255, 255, 255))
+
+            painter = QPainter(cropped)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            path = QPainterPath()
+            p0 = self._to_physical_point(self._points[0]) - phys_rect.topLeft()
+            path.moveTo(p0)
+            for pt in self._points[1:]:
+                path.lineTo(self._to_physical_point(pt) - phys_rect.topLeft())
+            path.closeSubpath()
+
+            painter.setClipPath(path)
+            painter.drawPixmap(0, 0, self._bg, phys_rect.x(), phys_rect.y(), phys_rect.width(), phys_rect.height())
+            painter.end()
+            return cropped
+        else:
+            # Clean rectangular snip
+            crop_pixmap = self._bg.copy(phys_rect)
+            crop_pixmap.setDevicePixelRatio(self._dpr)
+            return crop_pixmap
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._dragging:
             self._dragging = False
@@ -475,12 +511,9 @@ class SelectionOverlay(QWidget):
                 self.update()
                 return
 
-            # Extract exact native pixel crop using logical coordinates
-            # QPixmap.copy() works in logical (device-independent) coords;
-            # it internally applies DPR to read the correct physical pixels.
-            logical_rect = rect.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
-            crop_pixmap = self._bg.copy(logical_rect)
-            crop_pixmap.setDevicePixelRatio(self._dpr)
+            crop_pixmap = self._extract_crop(rect, is_circle=is_circle)
+            if crop_pixmap.isNull() or crop_pixmap.width() < 2:
+                return
 
             # Absolute virtual coordinates for floating toolbar positioning
             abs_rect = QRect(
@@ -493,8 +526,8 @@ class SelectionOverlay(QWidget):
 
     def _capture_fullscreen(self):
         active_screen = self._active_screen_rect
-        logical_rect = active_screen.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
-        crop_pixmap = self._bg.copy(logical_rect)
+        phys_rect = self._to_physical_rect(active_screen).intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
+        crop_pixmap = self._bg.copy(phys_rect)
         crop_pixmap.setDevicePixelRatio(self._dpr)
         abs_rect = QRect(
             active_screen.x() + self._vgeo.x(),
@@ -508,6 +541,13 @@ class SelectionOverlay(QWidget):
         self.cancelled.emit()
         self.close()
 
+    def closeEvent(self, event):
+        try:
+            self.cancelled.emit()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_Escape:
@@ -520,20 +560,20 @@ class SelectionOverlay(QWidget):
             self._capture_fullscreen()
         elif key in (Qt.Key_Return, Qt.Key_Enter):
             if self._has_selection:
-                if self._mode == SnipMode.CIRCLE and len(self._points) >= 2:
+                is_circle = (self._mode == SnipMode.CIRCLE and len(self._points) >= 2)
+                if is_circle:
                     rect = self._points_bounding_box()
                 else:
                     rect = self._current_rect()
                 if rect.width() >= 6 and rect.height() >= 6:
-                    logical_rect = rect.intersected(QRect(0, 0, self._bg.width(), self._bg.height()))
-                    crop_pixmap = self._bg.copy(logical_rect)
-                    crop_pixmap.setDevicePixelRatio(self._dpr)
-                    abs_rect = QRect(
-                        rect.x() + self._vgeo.x(),
-                        rect.y() + self._vgeo.y(),
-                        rect.width(),
-                        rect.height(),
-                    )
-                    self.selection_made.emit(crop_pixmap, abs_rect)
+                    crop_pixmap = self._extract_crop(rect, is_circle=is_circle)
+                    if not crop_pixmap.isNull() and crop_pixmap.width() >= 2:
+                        abs_rect = QRect(
+                            rect.x() + self._vgeo.x(),
+                            rect.y() + self._vgeo.y(),
+                            rect.width(),
+                            rect.height(),
+                        )
+                        self.selection_made.emit(crop_pixmap, abs_rect)
             else:
                 self._capture_fullscreen()

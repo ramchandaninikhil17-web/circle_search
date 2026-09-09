@@ -308,7 +308,7 @@ class ActionToolbar(QWidget):
     # ---- actions -------------------------------------------------
     def _on_image_search(self):
         clipboard = QApplication.clipboard()
-        clipboard.setPixmap(self._crop_pixmap)
+        clipboard.setImage(self._crop_pixmap.toImage())
 
         self.btn_image.setEnabled(False)
         self.btn_image.setText("Searching…")
@@ -378,7 +378,7 @@ class ActionToolbar(QWidget):
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Text copied to clipboard!")
         else:
-            clipboard.setPixmap(self._crop_pixmap)
+            clipboard.setImage(self._crop_pixmap.toImage())
             self.btn_copy.setEnabled(False)
             self.status.setStyleSheet("color: #188038; font-weight: 600;")
             self.status.setText("✓ Image copied to clipboard!")

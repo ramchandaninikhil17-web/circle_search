@@ -21,7 +21,7 @@ socket.setdefaulttimeout(7.0)
 
 
 def search_image(pil_image: Image.Image) -> tuple[bool, str]:
-    """Uploads the image and opens Google Lens in default browser.
+    """Uploads the image to a high-speed CDN and opens Google Lens in default browser.
     Returns (success: bool, status_message: str).
     """
     if pil_image is None:
@@ -40,7 +40,7 @@ def search_image(pil_image: Image.Image) -> tuple[bool, str]:
     rgb_img.save(buf, format="JPEG", quality=92, subsampling=0)
     img_bytes = buf.getvalue()
 
-    # 1. Primary: High-speed CDN hosts for Google Lens uploadbyurl
+    # 1. Primary: High-speed verified image hosts for Google Lens uploadbyurl
     try:
         direct_image_url = _upload_multi_provider(img_bytes)
         if direct_image_url:
@@ -55,9 +55,9 @@ def search_image(pil_image: Image.Image) -> tuple[bool, str]:
 
 
 def _upload_multi_provider(img_bytes: bytes) -> str | None:
-    """Tries fast, public image hosting CDNs in sequence."""
+    """Tries public image hosting CDNs that provide direct raw image streams."""
     providers = [
-        _upload_tmpfiles,
+        _upload_freeimage,
         _upload_catbox,
         _upload_uguu,
     ]
@@ -73,28 +73,27 @@ def _upload_multi_provider(img_bytes: bytes) -> str | None:
     return None
 
 
-def _upload_tmpfiles(img_bytes: bytes) -> str | None:
-    """Instant temporary file host that provides direct image links."""
-    boundary = "----WebKitFormBoundaryCircleTmpFiles"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="search.jpg"\r\n'
-        f"Content-Type: image/jpeg\r\n\r\n"
-    ).encode("utf-8") + img_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+def _upload_freeimage(img_bytes: bytes) -> str | None:
+    """FreeImage.host API (serves from iili.io, completely unblocked by Googlebot)."""
+    import base64
+    b64_img = base64.b64encode(img_bytes).decode("utf-8")
+    data = urllib.parse.urlencode({
+        "key": "6d207e02198a847aa98d0a2a901485a5",
+        "action": "upload",
+        "source": b64_img,
+        "format": "json",
+    }).encode("utf-8")
 
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Accept": "application/json",
-    }
-    req = urllib.request.Request("https://tmpfiles.org/api/v1/upload", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as res:
+    req = urllib.request.Request(
+        "https://freeimage.host/api/1/upload",
+        data=data,
+        headers={"User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(req, timeout=7) as res:
         if res.getcode() == 200:
             parsed = json.loads(res.read().decode("utf-8"))
-            url = parsed.get("data", {}).get("url")
-            if url and "tmpfiles.org/" in url:
-                # Convert view URL to direct download stream URL for Google crawler
-                return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            if parsed.get("status_code") == 200 or parsed.get("image"):
+                return parsed.get("image", {}).get("url") or parsed.get("image", {}).get("display_url")
     return None
 
 

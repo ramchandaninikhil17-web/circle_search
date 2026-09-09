@@ -103,15 +103,25 @@ class App:
 
     # ---- activation flow -------------------------------------------------
     def _on_activate(self):
-        # If an overlay is currently open, bring it to focus
+        # 1. Check if overlay is already active and visible
         if self._overlay is not None:
-            self._overlay.raise_()
-            self._overlay.activateWindow()
-            return
+            try:
+                if self._overlay.isVisible():
+                    self._overlay.raise_()
+                    self._overlay.activateWindow()
+                    return
+                else:
+                    self._overlay.close()
+            except Exception:
+                pass
+            self._overlay = None
 
-        # If a toolbar is currently showing, close it cleanly first
+        # 2. If toolbar is open, close it cleanly
         if self._toolbar is not None:
-            self._toolbar.close()
+            try:
+                self._toolbar.close()
+            except Exception:
+                pass
             self._toolbar = None
 
         self._busy = True
@@ -122,10 +132,15 @@ class App:
             return
 
         pref_mode = SnipMode.RECTANGLE if self.settings.get("preferred_mode") == "rect" else SnipMode.CIRCLE
-        self._overlay = SelectionOverlay(bg_pixmap, vgeo, default_mode=pref_mode)
-        self._overlay.selection_made.connect(self._on_selection)
-        self._overlay.cancelled.connect(self._on_overlay_closed)
-        self._overlay.showFullScreenAllMonitors()
+        try:
+            self._overlay = SelectionOverlay(bg_pixmap, vgeo, default_mode=pref_mode)
+            self._overlay.selection_made.connect(self._on_selection)
+            self._overlay.cancelled.connect(self._on_overlay_closed)
+            self._overlay.destroyed.connect(self._on_overlay_closed)
+            self._overlay.showFullScreenAllMonitors()
+        except Exception:
+            self._overlay = None
+            self._busy = False
 
     def _on_selection(self, crop_pixmap, abs_rect):
         if self._overlay:
@@ -134,15 +149,23 @@ class App:
                 self._overlay.cancelled.disconnect()
             except Exception:
                 pass
-            self._overlay.close()
+            try:
+                self._overlay.close()
+            except Exception:
+                pass
             self._overlay = None
 
-        self._toolbar = ActionToolbar(
-            crop_pixmap, abs_rect,
-            min_chars_for_text=self.settings.get("ocr_min_chars_for_text_suggestion", 2),
-        )
-        self._toolbar.closed.connect(self._on_toolbar_closed)
-        self._toolbar.show()
+        try:
+            self._toolbar = ActionToolbar(
+                crop_pixmap, abs_rect,
+                min_chars_for_text=self.settings.get("ocr_min_chars_for_text_suggestion", 2),
+            )
+            self._toolbar.closed.connect(self._on_toolbar_closed)
+            self._toolbar.destroyed.connect(self._on_toolbar_closed)
+            self._toolbar.show()
+        except Exception:
+            self._toolbar = None
+            self._busy = False
 
     def _on_overlay_closed(self):
         self._overlay = None
