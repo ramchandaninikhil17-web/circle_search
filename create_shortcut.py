@@ -42,8 +42,15 @@ $s.Save()
 def main():
     project_dir = os.path.dirname(os.path.abspath(__file__))
     main_py = os.path.join(project_dir, "main.py")
+    exe_path = os.path.join(project_dir, "dist", "CircleSearch.exe")
     icon_ico = os.path.join(project_dir, "app_icon.ico")
-    pythonw_path = find_pythonw()
+
+    if os.path.isfile(exe_path):
+        target_path = exe_path
+        arguments = ""
+    else:
+        target_path = find_pythonw()
+        arguments = f'"{main_py}" --trigger'
 
     user_profile = os.environ.get("USERPROFILE", os.path.expanduser("~"))
     desktop = os.path.join(user_profile, "Desktop")
@@ -58,8 +65,8 @@ def main():
     for shortcut in shortcuts:
         try:
             create_windows_shortcut(
-                target_path=pythonw_path,
-                arguments=f'"{main_py}" --trigger',
+                target_path=target_path,
+                arguments=arguments,
                 shortcut_path=shortcut,
                 working_dir=project_dir,
                 icon_path=icon_ico,

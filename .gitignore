@@ -1,0 +1,27 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller build cache (keep dist/CircleSearch.exe for 1-click portable running)
+build/
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Temporary / test files
+test_*.py
+scratch/
+check_*.ps1
+test_*.ps1
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
